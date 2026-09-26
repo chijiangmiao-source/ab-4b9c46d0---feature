@@ -30,6 +30,7 @@ from app.equivalence import (  # noqa: E402
     compare,
     parse_procedure,
 )
+from app.realization import _dot, _row_mul, minimal_realization  # noqa: E402
 
 TARGET = os.environ.get("TARGET_URL", "http://acoustic-review:8000")
 
@@ -124,6 +125,69 @@ try:
     check("核心校验: 初始分布和不为一被拒", False, "未抛错")
 except ProcedureValidationError:
     check("核心校验: 初始分布和不为一被拒", True)
+
+# ---------------------------------------------------------------------------
+# 1b. 最小安全观测实现审计（核心，精确有理数）
+# ---------------------------------------------------------------------------
+
+# 3 态、安全态 {2}：状态 1、2 在命令 a 下行为完全一致（1->0,2->0），
+# 初始 (1,0,0) 第一步以 1/2 进入 1、1/2 进入 2，此后不可区分 -> Hankel 秩 2。
+REDUCIBLE = [["0", "1/2", "1/2"], ["1", "0", "0"], ["1", "0", "0"]]
+red = minimal_realization(proc(3, ["1", "0", "0"], [2], {"a": REDUCIBLE}))
+check(
+    "审计核心: 冗余状态维数收缩 3 -> 2",
+    red["n"] == 3
+    and red["reachableRank"] == 2
+    and red["observableRank"] == 3
+    and red["minimalDimension"] == 2,
+    f"n={red['n']} R={red['reachableRank']} O={red['observableRank']} r={red['minimalDimension']}",
+)
+check(
+    "审计核心: 收缩证据含稳定前缀/后缀主元基",
+    red["pivotPrefixes"] == ["", "a"] and red["pivotSuffixes"] == ["", "a"],
+    f"{red['pivotPrefixes']} / {red['pivotSuffixes']}",
+)
+# 命令矩阵重构：α A(a)^k β 与 π M(a)^k 1_安全态 对 k=0..6 精确一致
+_red_proc = proc(3, ["1", "0", "0"], [2], {"a": REDUCIBLE})
+_dist = list(_red_proc.initial)
+_vec = list(red["alpha"])
+_recon_ok = True
+for _ in range(7):
+    if sum(_dist[i] for i in _red_proc.safe) != _dot(_vec, red["beta"]):
+        _recon_ok = False
+        break
+    _dist = _row_mul(_dist, _red_proc.matrices["a"], 3)
+    _vec = _row_mul(_vec, red["matrices"]["a"], 2)
+check("审计核心: 命令矩阵重构回放 k=0..6 精确一致", _recon_ok)
+check(
+    "审计核心: 逐基回放全部匹配（空串+基对+转移对）",
+    red["verified"] is True and all(item["match"] for item in red["replay"]),
+)
+
+# 满秩规程：最小维数等于原状态数，仍返回完整证据
+_full = minimal_realization(proc(2, ["1", "0"], [1], {"x": [["1/2", "1/2"], ["1/3", "2/3"]]}))
+check(
+    "审计核心: 满秩时维数相等且证据完整",
+    _full["minimalDimension"] == 2
+    and len(_full["alpha"]) == 2
+    and len(_full["matrices"]["x"]) == 2
+    and _full["verified"] is True,
+)
+
+# 安全概率恒零：最小维数 0，空模型精确表达零函数
+_zero = minimal_realization(
+    proc(3, ["1", "0", "0"], [2], {"a": [["0", "1", "0"], ["0", "1", "0"], ["0", "0", "1"]]})
+)
+check("审计核心: 恒零安全函数最小维数为 0", _zero["minimalDimension"] == 0, str(_zero["minimalDimension"]))
+
+# 非法概率行在审计核心入口（复用原校验）即被拒绝
+try:
+    minimal_realization(
+        proc(2, ["1", "0"], [1], {"x": [["1/2", "0"], ["0", "1"]]})
+    )
+    check("审计核心: 非法概率行被拒", False, "未抛错")
+except ProcedureValidationError:
+    check("审计核心: 非法概率行被拒", True)
 
 # ---------------------------------------------------------------------------
 # 2. 构建检查
@@ -255,6 +319,90 @@ check(
     and any("prob" in loc for loc in locs),
     str(locs),
 )
+
+# --- /api/audit：维数收缩、命令矩阵重构、非法概率行拒绝 --------------------
+
+audit_reducible = {
+    "n": 3,
+    "initial": ["1", "0", "0"],
+    "safe": [2],
+    "commands": [
+        {
+            "symbol": "a",
+            "rows": [
+                [{"target": 0, "prob": "0"}, {"target": 1, "prob": "1/2"}, {"target": 2, "prob": "1/2"}],
+                [{"target": 0, "prob": "1"}, {"target": 1, "prob": "0"}, {"target": 2, "prob": "0"}],
+                [{"target": 0, "prob": "1"}, {"target": 1, "prob": "0"}, {"target": 2, "prob": "0"}],
+            ],
+        }
+    ],
+}
+status, body = http("POST", "/api/audit", {"side": "A", "procedure": audit_reducible})
+audit = body.get("audit", {})
+check(
+    "API 审计: 冗余状态维数收缩 3 -> 2",
+    status == 200
+    and audit.get("n") == 3
+    and audit.get("minimalDimension") == 2
+    and audit.get("reduced") is True,
+    f"{status} {body}",
+)
+check(
+    "API 审计: 返回基串与初始/终止向量",
+    audit.get("pivotPrefixes") == ["", "a"]
+    and audit.get("pivotSuffixes") == ["", "a"]
+    and len(audit.get("alpha", [])) == 2
+    and len(audit.get("beta", [])) == 2,
+    str(audit),
+)
+check(
+    "API 审计: 命令矩阵重构为 2x2 精确分数",
+    (
+        lambda mat: isinstance(mat, list)
+        and len(mat) == 2
+        and all(len(row) == 2 for row in mat)
+        and all(set(f) == {"num", "den", "text"} for row in mat for f in row)
+    )(audit.get("matrices", {}).get("a", [])),
+    str(audit.get("matrices")),
+)
+check(
+    "API 审计: 基对逐项回放全部精确一致",
+    audit.get("verified") is True
+    and bool(audit.get("replay"))
+    and all(item.get("match") is True for item in audit.get("replay", []))
+    # 必须同时包含原规程概率与压缩模型概率两列精确分数
+    and all(
+        set(item.get("original", {})) == {"num", "den", "text"}
+        and set(item.get("compressed", {})) == {"num", "den", "text"}
+        for item in audit.get("replay", [])
+    ),
+    "回放缺失或存在不一致项",
+)
+check(
+    "API 审计: 回放覆盖空串/基对/转移对",
+    {item.get("kind") for item in audit.get("replay", [])} == {"empty", "basis", "transition"},
+    str({item.get("kind") for item in audit.get("replay", [])}),
+)
+
+# 非法概率行（行和 1/2）必须 400，且 loc 定位到 A 侧具体行
+audit_bad = json.loads(json.dumps(audit_reducible))
+audit_bad["commands"][0]["rows"][0] = [
+    {"target": 0, "prob": "1/2"},
+    {"target": 1, "prob": "0"},
+    {"target": 2, "prob": "0"},
+]
+status, body = http("POST", "/api/audit", {"side": "A", "procedure": audit_bad})
+locs = [tuple(e.get("loc", [])) for e in body.get("errors", [])]
+check("API 审计: 非法概率行返回 400", status == 400, str(status))
+check(
+    "API 审计: 错误 loc 定位到 A 侧命令行",
+    any(loc[:4] == ("A", "commands", 0, "rows") for loc in locs),
+    str(locs),
+)
+
+# side 非法
+status, _ = http("POST", "/api/audit", {"side": "C", "procedure": audit_reducible})
+check("API 审计: 非法 side 返回 400", status == 400, str(status))
 
 # ---------------------------------------------------------------------------
 # 验收结论

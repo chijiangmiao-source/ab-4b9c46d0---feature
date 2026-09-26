@@ -142,9 +142,14 @@ function collectPayload(side) {
 // ---------------------------------------------------------------------------
 
 let dirty = false;
+let draftVersion = 0;
 function markDirty() {
   dirty = true;
+  draftVersion += 1;
   $("result").hidden = true;
+  // 草稿一旦修改，同时清空最小实现审计的压缩结论；
+  // 审计区与双规程复核区相互独立，互不覆盖。
+  $("audit").hidden = true;
   clearHighlights();
 }
 
@@ -373,6 +378,211 @@ $("btn-review").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 最小安全观测实现审计（可对 A 或 B 单侧发起）
+// ---------------------------------------------------------------------------
+
+function wordText(prefix, middle, suffix) {
+  const p = prefix.length ? prefix : "ε";
+  const s = suffix.length ? suffix : "ε";
+  return middle ? `${p} · ${middle} · ${s}` : `${p} · ${s}`;
+}
+
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function renderFractionMatrix(mat) {
+  const table = document.createElement("table");
+  table.className = "step-table compact-matrix";
+  const tbody = document.createElement("tbody");
+  mat.forEach((row) => {
+    const tr = document.createElement("tr");
+    row.forEach((f) => {
+      const td = document.createElement("td");
+      td.textContent = fracText(f);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return table;
+}
+
+function renderVector(v) {
+  return "(" + v.map(fracText).join(", ") + ")";
+}
+
+function renderAudit(side, a) {
+  const box = $("audit");
+  box.className = "result verdict-audit";
+  box.innerHTML = "";
+
+  const h = document.createElement("h2");
+  h.textContent = `最小安全观测实现审计 · 规程 ${side}`;
+  box.appendChild(h);
+
+  // --- 维数总览 ---
+  const dim = document.createElement("div");
+  dim.className = "audit-dims";
+  dim.innerHTML =
+    `原状态数 <strong>${a.n}</strong> ｜ 初始分布可达行空间秩 <strong>${a.reachableRank}</strong>` +
+    ` ｜ 安全观测反向列空间秩 <strong>${a.observableRank}</strong>` +
+    ` ｜ Hankel 秩 / 最小维数 <strong class="${a.reduced ? "dim-reduced" : "dim-equal"}">${a.minimalDimension}</strong>`;
+  box.appendChild(dim);
+
+  // --- 语义边界声明 ---
+  const note = document.createElement("div");
+  note.className = a.reduced ? "audit-warning" : "audit-note";
+  if (a.reduced) {
+    note.innerHTML =
+      `最小维数 <strong>${a.minimalDimension}</strong> &lt; 原状态数 <strong>${a.n}</strong>：` +
+      "存在 " + (a.n - a.minimalDimension) + " 维对“任意有限 ASCII 命令串结束时进入安全态的概率”不产生影响。" +
+      "该压缩模型由 Hankel 配对秩导出，<strong>只保持安全概率语义，不是可直接替换原控制器的随机控制器</strong>" +
+      "（命令矩阵条目可为负、行和不必为 1，也不对应真实状态分布）。";
+  } else {
+    note.innerHTML =
+      `最小维数 <strong>${a.minimalDimension}</strong> = 原状态数 <strong>${a.n}</strong>：` +
+      "不存在可收缩的冗余维度。以下仍返回完整证据（基串、初始/终止向量、各命令矩阵与逐项回放）。";
+  }
+  box.appendChild(note);
+
+  // --- 基命令串 ---
+  const basis = document.createElement("div");
+  basis.className = "audit-basis";
+  const fmtList = (ws) => ws.length ? ws.map((w) => `“${w || "ε"}”`).join("，") : "（空）";
+  basis.innerHTML =
+    `<div><span class="k">可达行空间前缀基（共 ${a.prefixBasis.length} 个）：</span>${esc(fmtList(a.prefixBasis))}</div>` +
+    `<div><span class="k">观测列空间后缀基（共 ${a.suffixBasis.length} 个）：</span>${esc(fmtList(a.suffixBasis))}</div>` +
+    `<div><span class="k">Hankel 主元前缀（最小实现坐标，共 ${a.pivotPrefixes.length} 个）：</span>${esc(fmtList(a.pivotPrefixes))}</div>` +
+    `<div><span class="k">Hankel 主元后缀（共 ${a.pivotSuffixes.length} 个）：</span>${esc(fmtList(a.pivotSuffixes))}</div>`;
+  box.appendChild(basis);
+
+  // --- 初始 / 终止向量 ---
+  const vecs = document.createElement("div");
+  vecs.className = "audit-vectors";
+  if (a.minimalDimension === 0) {
+    vecs.innerHTML =
+      '<div class="hint">最小维数为 0：安全态从初始分布经任意命令串都不可达，' +
+      "安全概率函数恒为零，初始/终止向量与命令矩阵均为空。</div>";
+  } else {
+    vecs.innerHTML =
+      `<div><span class="k">初始向量 α：</span><code>${esc(renderVector(a.alpha))}</code></div>` +
+      `<div><span class="k">终止向量 β：</span><code>${esc(renderVector(a.beta))}</code></div>`;
+  }
+  vecs.insertAdjacentHTML(
+    "beforeend",
+    '<div class="hint">对任意有限命令串 w：f(w) = α · A(w) · β，与原规程 π · M(w) · 1_安全态 精确相等。</div>'
+  );
+  box.appendChild(vecs);
+
+  // --- 各命令矩阵 ---
+  const mh = document.createElement("h3");
+  mh.textContent = "各命令的最小实现矩阵 A(c)（Hankel 坐标，精确分数）";
+  box.appendChild(mh);
+  const mwrap = document.createElement("div");
+  mwrap.className = "audit-matrices";
+  Object.keys(a.matrices).sort().forEach((symbol) => {
+    const div = document.createElement("div");
+    const hh = document.createElement("div");
+    hh.className = "k";
+    hh.textContent = `A(${JSON.stringify(symbol)})`;
+    div.appendChild(hh);
+    if (a.minimalDimension === 0) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = "最小维数为 0：安全概率函数恒为零，无矩阵条目。";
+      div.appendChild(p);
+    } else {
+      div.appendChild(renderFractionMatrix(a.matrices[symbol]));
+    }
+    mwrap.appendChild(div);
+  });
+  box.appendChild(mwrap);
+
+  // --- 逐项回放取证 ---
+  const rh = document.createElement("h3");
+  rh.textContent = `基对逐项回放（原规程概率 vs 压缩模型概率，共 ${a.replay.length} 项）`;
+  box.appendChild(rh);
+  const table = document.createElement("table");
+  table.className = "step-table replay-table";
+  const thead = document.createElement("thead");
+  thead.innerHTML =
+    "<tr><th>类别</th><th>命令串（前缀 · 命令 · 后缀）</th><th>长度</th>" +
+    "<th>原规程安全概率</th><th>压缩模型安全概率</th><th>主元</th><th>一致</th></tr>";
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  const kindName = { empty: "空串", basis: "基对", transition: "转移对" };
+  a.replay.forEach((item) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${kindName[item.kind] || item.kind}</td>` +
+      `<td class="mono">${esc(wordText(item.prefix, item.middle, item.suffix))}</td>` +
+      `<td>${item.wordLength}</td>` +
+      `<td>${fracText(item.original)}</td>` +
+      `<td>${fracText(item.compressed)}</td>` +
+      `<td>${item.pivot ? "★" : ""}</td>` +
+      `<td>${item.match ? "✓" : "✗"}</td>`;
+    if (!item.match) tr.classList.add("replay-mismatch");
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  box.appendChild(table);
+
+  const verdict = document.createElement("p");
+  verdict.className = a.verified ? "audit-ok" : "audit-fail";
+  verdict.textContent = a.verified
+    ? "✓ 全部基对回放精确一致：压缩模型可复算（精确分数，无浮点）。"
+    : "✗ 存在回放不一致项，请复核输入。";
+  box.appendChild(verdict);
+
+  box.hidden = false;
+}
+
+async function runAudit(side) {
+  clearHighlights();
+  $("errors").hidden = true;
+  $("audit").hidden = true;
+
+  let procedure;
+  try {
+    procedure = collectPayload(side);
+  } catch (e) {
+    showErrors([{ loc: [side], msg: `表单读取失败：${e.message}` }]);
+    return;
+  }
+
+  // 记录发起时的草稿版本：返回时若版本已变（审计期间草稿被修改），
+  // 丢弃本次压缩结论，不渲染、不覆盖任何现有结果。
+  const versionAtRequest = draftVersion;
+
+  let data;
+  let resp;
+  try {
+    resp = await fetch("/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ side, procedure }),
+    });
+    data = await resp.json();
+  } catch (e) {
+    if (versionAtRequest === draftVersion) {
+      showErrors([{ loc: [], msg: `审计接口请求失败：${e.message}` }]);
+    }
+    return;
+  }
+
+  if (versionAtRequest !== draftVersion) return;
+
+  if (!resp.ok || !data.ok) {
+    // 未通过原有校验：不产出压缩结论（审计区保持隐藏），错误在表单中定位
+    showErrors(data.errors || [{ loc: [], msg: "服务端返回未知错误" }]);
+    return;
+  }
+  renderAudit(data.side, data.audit);
+}
+
+$("btn-audit-A").addEventListener("click", () => runAudit("A"));
+$("btn-audit-B").addEventListener("click", () => runAudit("B"));
+
+// ---------------------------------------------------------------------------
 // 示例
 // ---------------------------------------------------------------------------
 
@@ -428,6 +638,25 @@ $("btn-equivalent-example").addEventListener("click", () => {
       matrices: { x: m },
     });
   }
+});
+
+$("btn-reducible-example").addEventListener("click", () => {
+  // 3 态但状态 1、2 转移行为完全一致：Hankel 秩 = 2，最小实现 3→2 收缩。
+  const m = [["0", "1/2", "1/2"], ["1", "0", "0"], ["1", "0", "0"]];
+  fillForm("A", {
+    n: 3,
+    initial: "1 0 0",
+    safe: "2",
+    symbols: "a",
+    matrices: { a: m },
+  });
+  fillForm("B", {
+    n: 3,
+    initial: "1 0 0",
+    safe: "1 2",
+    symbols: "a",
+    matrices: { a: m },
+  });
 });
 
 // 初始化
