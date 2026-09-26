@@ -209,3 +209,92 @@ footer {
   main, .trace { grid-template-columns: 1fr; }
   .actions { flex-wrap: wrap; }
 }
+
+/* ---------------------------------------------------------------------------
+   最小安全观测实现审计
+   --------------------------------------------------------------------------- */
+
+.audit {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+
+.audit h2 { color: var(--accent); margin: 0 0 10px; font-size: 17px; }
+
+.audit-summary { font-size: 14px; }
+
+.audit-warn {
+  background: #3a2f16;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  color: var(--warn);
+}
+
+.audit-info {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.audit-stale {
+  margin: 0;
+  border: 1px dashed var(--warn);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--warn);
+  font-size: 13.5px;
+}
+
+.audit-block { margin-top: 14px; }
+
+.audit-block h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+
+.audit-dim0 { color: var(--muted); font-size: 13px; margin: 0; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.chip {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 12px;
+}
+
+table.matrix-mini, table.replay-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+table.matrix-mini th, table.matrix-mini td,
+table.replay-table th, table.replay-table td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.matrix-mini th, table.replay-table th {
+  color: var(--muted);
+  font-weight: normal;
+  text-align: center;
+}
+
+table.replay-table { width: 100%; }
+
+table.replay-table td:nth-child(-n + 3) {
+  text-align: center;
+  font-family: ui-monospace, monospace;
+}
+
+.replay-ok { color: var(--ok); text-align: center; }
+.replay-bad { color: var(--bad); text-align: center; }
